@@ -182,6 +182,17 @@ func TestReadByJQL_WithFields(t *testing.T) {
 	callRead(t, h, ReadArgs{JQL: "x", Fields: "summary,status"})
 }
 
+func TestReadByJQL_WithNextPageToken(t *testing.T) {
+	mc := &mockClient{
+		SearchIssuesFn: func(_ context.Context, _ string, opts *jira.SearchOptionsV3) (*jira.SearchResultV3, error) {
+			assert.Equal(t, "tok123", opts.NextPageToken)
+			return &jira.SearchResultV3{}, nil
+		},
+	}
+	h := &handlers{client: mc}
+	callRead(t, h, ReadArgs{JQL: "project = X", NextPageToken: "tok123"})
+}
+
 func TestReadByJQL_ClientError(t *testing.T) {
 	mc := &mockClient{
 		SearchIssuesFn: func(context.Context, string, *jira.SearchOptionsV3) (*jira.SearchResultV3, error) {
