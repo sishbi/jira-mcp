@@ -1,5 +1,5 @@
-// Package jirahttp wraps the go-jira client with retry logic at the call level.
-package jirahttp
+// Package  wraps the go-jira client with retry logic at the call level.
+package jira
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	jira "github.com/andygrunwald/go-jira"
+	"github.com/andygrunwald/go-jira"
 )
 
 // Config holds JIRA connection settings.
@@ -63,24 +63,24 @@ func (c *Client) GetIssue(ctx context.Context, key string, opts *jira.GetQueryOp
 	return issue, err
 }
 
-// SearchOptions configures a JQL search via the v3 search/jql endpoint.
-type SearchOptions struct {
+// SearchOptionsV3 configures a JQL search via the v3 search/jql endpoint.
+type SearchOptionsV3 struct {
 	MaxResults    int
 	NextPageToken string
 	Fields        []string
 	Expand        string
 }
 
-// SearchResult holds the response from a JQL search.
-type SearchResult struct {
+// SearchResultV3 holds the response from a JQL search.
+type SearchResultV3 struct {
 	Issues        []jira.Issue
 	Total         int
 	NextPageToken string
 }
 
 // SearchIssues runs a JQL query using the v3 search/jql endpoint.
-func (c *Client) SearchIssues(ctx context.Context, jql string, opts *SearchOptions) (*SearchResult, error) {
-	var sr SearchResult
+func (c *Client) SearchIssues(ctx context.Context, jql string, opts *SearchOptionsV3) (*SearchResultV3, error) {
+	var sr SearchResultV3
 	err := c.retry(ctx, func() (*jira.Response, error) {
 		body := map[string]any{"jql": jql}
 		if opts != nil {
@@ -109,7 +109,7 @@ func (c *Client) SearchIssues(ctx context.Context, jql string, opts *SearchOptio
 			NextPageToken string       `json:"nextPageToken"`
 		}
 		resp, err := c.J.Do(req, &result)
-		sr = SearchResult{
+		sr = SearchResultV3{
 			Issues:        result.Issues,
 			Total:         result.Total,
 			NextPageToken: result.NextPageToken,
@@ -396,9 +396,7 @@ func enrichError(resp *jira.Response, original error) error {
 	}
 
 	var parts []string
-	for _, msg := range jiraErr.ErrorMessages {
-		parts = append(parts, msg)
-	}
+	parts = append(parts, jiraErr.ErrorMessages...)
 	for field, msg := range jiraErr.Errors {
 		parts = append(parts, fmt.Sprintf("%s: %s", field, msg))
 	}

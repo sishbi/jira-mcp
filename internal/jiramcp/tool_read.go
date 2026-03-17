@@ -7,8 +7,7 @@ import (
 	"strings"
 	"time"
 
-	jira "github.com/andygrunwald/go-jira"
-	"github.com/mmatczuk/jiramcp/internal/jirahttp"
+	"github.com/mmatczuk/jiramcp/internal/jira"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -103,7 +102,7 @@ func (h *handlers) readByKeys(ctx context.Context, args ReadArgs) *mcp.CallToolR
 }
 
 func (h *handlers) readByJQL(ctx context.Context, args ReadArgs) *mcp.CallToolResult {
-	opts := &jirahttp.SearchOptions{
+	opts := &jira.SearchOptionsV3{
 		MaxResults:    args.Limit,
 		NextPageToken: args.NextPageToken,
 	}

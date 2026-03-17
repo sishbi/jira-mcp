@@ -10,12 +10,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/mmatczuk/jiramcp/internal/jirahttp"
+	"github.com/mmatczuk/jiramcp/internal/jira"
 	"github.com/mmatczuk/jiramcp/internal/jiramcp"
 )
 
 func main() {
-	client, err := jirahttp.New(jirahttp.Config{
+	client, err := jira.New(jira.Config{
 		URL:        requireEnv("JIRA_URL"),
 		Email:      requireEnv("JIRA_EMAIL"),
 		APIToken:   requireEnv("JIRA_API_TOKEN"),
