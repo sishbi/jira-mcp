@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/mmatczuk/jira-mcp/internal/jira"
@@ -14,19 +15,21 @@ import (
 )
 
 type WriteItem struct {
-	Key         string   `json:"key,omitempty" jsonschema:"Issue key (e.g. PROJ-1). Required for update/delete/transition/comment/edit_comment."`
-	Project     string   `json:"project,omitempty" jsonschema:"Project key for create action."`
-	Summary     string   `json:"summary,omitempty" jsonschema:"Issue summary/title."`
-	IssueType   string   `json:"issue_type,omitempty" jsonschema:"Issue type name (e.g. Bug, Task, Story, Epic)."`
-	Priority    string   `json:"priority,omitempty" jsonschema:"Priority name (e.g. High, Medium, Low)."`
-	Assignee    string   `json:"assignee,omitempty" jsonschema:"Assignee account ID. Use jira_user_search to find account IDs by name or email."`
-	Description string   `json:"description,omitempty" jsonschema:"Issue description in Markdown. Auto-converted to Atlassian Document Format."`
-	Labels      []string `json:"labels,omitempty" jsonschema:"Issue labels."`
+	Key               string   `json:"key,omitempty" jsonschema:"Issue key (e.g. PROJ-1). Required for update/delete/transition/comment/edit_comment."`
+	Project           string   `json:"project,omitempty" jsonschema:"Project key for create action."`
+	Summary           string   `json:"summary,omitempty" jsonschema:"Issue summary/title."`
+	IssueType         string   `json:"issue_type,omitempty" jsonschema:"Issue type name (e.g. Bug, Task, Story, Epic)."`
+	Priority          string   `json:"priority,omitempty" jsonschema:"Priority name (e.g. High, Medium, Low)."`
+	Assignee          string   `json:"assignee,omitempty" jsonschema:"Assignee account ID. Use jira_user_search to find account IDs by name or email."`
+	Description       string   `json:"description,omitempty" jsonschema:"Issue description. Format controlled by description_format (default Markdown → ADF)."`
+	DescriptionFormat string   `json:"description_format,omitempty" jsonschema:"How to interpret description. markdown (default): converted to ADF and sent via v3. wiki: sent verbatim as legacy Jira wiki-markup via v2. Allowed: markdown, wiki."`
+	Labels            []string `json:"labels,omitempty" jsonschema:"Issue labels."`
 
 	TransitionID string `json:"transition_id,omitempty" jsonschema:"Transition ID. Use jira_schema resource=transitions issue_key=X to find valid IDs."`
 
-	Comment   string `json:"comment,omitempty" jsonschema:"Comment body in Markdown. Used for comment/edit_comment and optionally with transition."`
-	CommentID string `json:"comment_id,omitempty" jsonschema:"Comment ID for edit_comment action."`
+	Comment       string `json:"comment,omitempty" jsonschema:"Comment body. Format controlled by comment_format (default Markdown → ADF). Used for comment/edit_comment and optionally with transition."`
+	CommentFormat string `json:"comment_format,omitempty" jsonschema:"How to interpret comment. markdown (default): converted to ADF and sent via v3. wiki: sent verbatim as legacy Jira wiki-markup via v2. Allowed: markdown, wiki."`
+	CommentID     string `json:"comment_id,omitempty" jsonschema:"Comment ID for edit_comment action."`
 
 	SprintID int `json:"sprint_id,omitempty" jsonschema:"Sprint ID for move_to_sprint action."`
 
@@ -40,7 +43,8 @@ type WriteArgs struct {
 }
 
 var writeTool = &mcp.Tool{
-	Name: "jira_write",
+	Name:        "jira_write",
+	InputSchema: mustBuildWriteInputSchema(),
 	Description: `Modify JIRA data. Batch-first: pass an array of items even for single operations.
 
 Actions:
@@ -57,14 +61,16 @@ Creating issues:
 - Pass custom fields via fields_json (e.g. fields_json="{\"customfield_10104\": {\"value\": \"Production\"}}").
 - If the issue type is invalid for the project, the error lists available types.
 
-All actions support dry_run=true to preview without executing. Descriptions and comments accept Markdown.`,
+All actions support dry_run=true to preview without executing.
+
+Descriptions and comments expect Markdown by default and are converted to ADF via the v3 API. Do not round-trip a jira_read result straight into jira_write — old issues return legacy Jira wiki-markup, which is not Markdown. Wiki-markup tokens ({code}, {{inline}}, h1., etc.) are detected and rejected on the default path. To send wiki-markup deliberately, set description_format="wiki" or comment_format="wiki" — the write is then routed through the v2 API with the raw string.`,
 }
 
 // createMetaCache caches create-metadata API responses within a single
 // handleWrite call to avoid redundant requests for batch creates.
 type createMetaCache struct {
-	issueTypes map[string][]jira.CreateMetaIssueType            // project → issue types
-	fields     map[string]map[string][]jira.CreateMetaField     // project → issueTypeID → fields
+	issueTypes map[string][]jira.CreateMetaIssueType        // project → issue types
+	fields     map[string]map[string][]jira.CreateMetaField // project → issueTypeID → fields
 }
 
 func newCreateMetaCache() *createMetaCache {
@@ -176,8 +182,81 @@ func (h *handlers) handleMoveToSprint(ctx context.Context, args WriteArgs) *mcp.
 	return textResult(out, false)
 }
 
-// buildIssuePayload constructs a v3 API payload with ADF description.
-func buildIssuePayload(item WriteItem) (map[string]any, error) {
+// wikiMarkupError constructs the rejection message for default (markdown)
+// writes that contain detected wiki-markup. field is the user-facing parameter
+// name ("description" or "comment"); optHint is the exact flag wording the
+// caller can use to opt in (e.g. `description_format="wiki"`).
+func wikiMarkupError(field, optHint string, hits []mdconv.WikiMarkupHit) error {
+	const maxHits = 5
+	n := len(hits)
+	if n > maxHits {
+		n = maxHits
+	}
+	examples := make([]string, n)
+	for i := 0; i < n; i++ {
+		examples[i] = fmt.Sprintf("%s (line %d)", hits[i].Token, hits[i].LineNumber+1)
+	}
+	return fmt.Errorf(
+		"%s appears to be Jira wiki-markup, not Markdown. Found tokens: %s. "+
+			"If you intended wiki-markup, set %s; otherwise convert to Markdown "+
+			"(```lang ... ``` for code, **bold** for bold, etc)",
+		field, strings.Join(examples, ", "), optHint,
+	)
+}
+
+// Body format identifiers for description and comment fields.
+const (
+	formatMarkdown = "markdown"
+	formatWiki     = "wiki"
+)
+
+// validBodyFormats enumerates the accepted description_format / comment_format
+// values. The ADF-description plan may extend this set with "adf" — keep the
+// literal here so both plans only touch a single map on merge.
+var validBodyFormats = map[string]bool{
+	formatMarkdown: true,
+	formatWiki:     true,
+}
+
+// bodyFormatEnum is the JSON Schema enum surfaced on description_format and
+// comment_format. Keep in sync with validBodyFormats.
+var bodyFormatEnum = []any{formatMarkdown, formatWiki}
+
+// resolveBodyFormat defaults an empty format string to markdown and returns an
+// error naming the accepted values if the caller supplied anything else.
+func resolveBodyFormat(paramName, value string) (string, error) {
+	if value == "" {
+		return formatMarkdown, nil
+	}
+	if !validBodyFormats[value] {
+		return "", fmt.Errorf("%s %q is not supported. Valid: %s, %s", paramName, value, formatMarkdown, formatWiki)
+	}
+	return value, nil
+}
+
+// mustBuildWriteInputSchema derives the WriteArgs schema via reflection and
+// patches the format fields with a JSON Schema enum. The tag-based inference
+// only supports a `description`, so the enum has to be grafted on explicitly.
+func mustBuildWriteInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[WriteArgs](&jsonschema.ForOptions{})
+	if err != nil {
+		panic(fmt.Sprintf("jira_write input schema: %v", err))
+	}
+	itemSchema := schema.Properties["items"].Items
+	itemSchema.Properties["description_format"].Enum = bodyFormatEnum
+	itemSchema.Properties["comment_format"].Enum = bodyFormatEnum
+	return schema
+}
+
+// buildIssuePayload constructs an issue payload and returns the resolved
+// description format. Callers dispatch on format == formatWiki to choose
+// between the v2 (raw wiki-markup string) and v3 (ADF) endpoints.
+func buildIssuePayload(item WriteItem) (payload map[string]any, format string, err error) {
+	format, err = resolveBodyFormat("description_format", item.DescriptionFormat)
+	if err != nil {
+		return nil, "", err
+	}
+
 	fields := map[string]any{}
 
 	if item.Project != "" {
@@ -199,29 +278,51 @@ func buildIssuePayload(item WriteItem) (map[string]any, error) {
 		fields["labels"] = item.Labels
 	}
 	if item.Description != "" {
-		adf := mdconv.ToADF(item.Description)
-		if adf != nil {
-			fields["description"] = adf
+		switch format {
+		case formatWiki:
+			fields["description"] = item.Description
+		default: // markdown
+			if hits := mdconv.DetectWikiMarkup(item.Description); len(hits) > 0 {
+				return nil, "", wikiMarkupError("description", `description_format="wiki"`, hits)
+			}
+			adf := mdconv.ToADF(item.Description)
+			if adf != nil {
+				fields["description"] = adf
+			}
 		}
 	}
 	if item.FieldsJSON != "" {
 		var extra map[string]any
 		if err := json.Unmarshal([]byte(item.FieldsJSON), &extra); err != nil {
-			return nil, fmt.Errorf("invalid fields_json: %w. Hint: Provide a valid JSON object like {\"customfield_10001\": \"value\"}", err)
+			return nil, "", fmt.Errorf("invalid fields_json: %w. Hint: Provide a valid JSON object like {\"customfield_10001\": \"value\"}", err)
 		}
 		for k, v := range extra {
 			fields[k] = v
 		}
 	}
 
-	return map[string]any{"fields": fields}, nil
+	return map[string]any{"fields": fields}, format, nil
 }
 
-// buildCommentBody converts markdown to an ADF body or falls back to plain text ADF.
-func buildCommentBody(markdown string) any {
-	adf := mdconv.ToADF(markdown)
+// buildCommentBody prepares a comment payload and returns the resolved format.
+// For markdown it returns an ADF doc destined for v3; for wiki it returns the
+// raw string destined for v2. Callers dispatch on format == formatWiki.
+func buildCommentBody(body, rawFormat string) (out any, format string, err error) {
+	format, err = resolveBodyFormat("comment_format", rawFormat)
+	if err != nil {
+		return nil, "", err
+	}
+	if format == formatWiki {
+		return body, format, nil
+	}
+
+	if hits := mdconv.DetectWikiMarkup(body); len(hits) > 0 {
+		return nil, "", wikiMarkupError("comment", `comment_format="wiki"`, hits)
+	}
+
+	adf := mdconv.ToADF(body)
 	if adf != nil {
-		return adf
+		return adf, format, nil
 	}
 	// Fallback: wrap plain text in minimal ADF.
 	return map[string]any{
@@ -231,11 +332,11 @@ func buildCommentBody(markdown string) any {
 			map[string]any{
 				"type": "paragraph",
 				"content": []any{
-					map[string]any{"type": "text", "text": markdown},
+					map[string]any{"type": "text", "text": body},
 				},
 			},
 		},
-	}
+	}, format, nil
 }
 
 // standardFields are field IDs that buildIssuePayload maps from WriteItem
@@ -250,7 +351,7 @@ func (h *handlers) writeCreate(ctx context.Context, item WriteItem, dryRun bool,
 		return "", fmt.Errorf("create requires project, summary, and issue_type. Got project=%q summary=%q issue_type=%q", item.Project, item.Summary, item.IssueType)
 	}
 
-	payload, err := buildIssuePayload(item)
+	payload, format, err := buildIssuePayload(item)
 	if err != nil {
 		return "", err
 	}
@@ -271,7 +372,12 @@ func (h *handlers) writeCreate(ctx context.Context, item WriteItem, dryRun bool,
 		return fmt.Sprintf("Would create issue in project %s with type %s:\n%s%s", item.Project, item.IssueType, string(data), preflightHint), nil
 	}
 
-	key, _, err := h.client.CreateIssueV3(ctx, payload)
+	var key string
+	if format == formatWiki {
+		key, _, err = h.client.CreateIssueV2(ctx, payload)
+	} else {
+		key, _, err = h.client.CreateIssueV3(ctx, payload)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to create issue in %s: %w; %s%s", item.Project, err, createErrorHints(err), preflightHint)
 	}
@@ -370,7 +476,7 @@ func (h *handlers) writeUpdate(ctx context.Context, item WriteItem, dryRun bool)
 		return "", fmt.Errorf("update requires key")
 	}
 
-	payload, err := buildIssuePayload(item)
+	payload, format, err := buildIssuePayload(item)
 	if err != nil {
 		return "", err
 	}
@@ -380,7 +486,12 @@ func (h *handlers) writeUpdate(ctx context.Context, item WriteItem, dryRun bool)
 		return fmt.Sprintf("Would update %s with:\n%s", item.Key, string(data)), nil
 	}
 
-	if err := h.client.UpdateIssueV3(ctx, item.Key, payload); err != nil {
+	if format == formatWiki {
+		err = h.client.UpdateIssueV2(ctx, item.Key, payload)
+	} else {
+		err = h.client.UpdateIssueV3(ctx, item.Key, payload)
+	}
+	if err != nil {
 		return "", fmt.Errorf("failed to update %s: %w", item.Key, err)
 	}
 
@@ -423,8 +534,10 @@ func (h *handlers) writeTransition(ctx context.Context, item WriteItem, dryRun b
 	msg := fmt.Sprintf("Transitioned %s with transition_id=%s.", item.Key, item.TransitionID)
 
 	if item.Comment != "" {
-		body := buildCommentBody(item.Comment)
-		if _, err := h.client.AddComment(ctx, item.Key, body); err != nil {
+		body, format, err := buildCommentBody(item.Comment, item.CommentFormat)
+		if err != nil {
+			msg += fmt.Sprintf(" Warning: transition succeeded but comment rejected: %v", err)
+		} else if _, err := addComment(ctx, h.client, item.Key, body, format); err != nil {
 			msg += fmt.Sprintf(" Warning: transition succeeded but comment failed: %v", err)
 		} else {
 			msg += " Comment added."
@@ -443,8 +556,11 @@ func (h *handlers) writeComment(ctx context.Context, item WriteItem, dryRun bool
 		return fmt.Sprintf("Would add comment to %s:\n%s", item.Key, item.Comment), nil
 	}
 
-	body := buildCommentBody(item.Comment)
-	commentID, err := h.client.AddComment(ctx, item.Key, body)
+	body, format, err := buildCommentBody(item.Comment, item.CommentFormat)
+	if err != nil {
+		return "", err
+	}
+	commentID, err := addComment(ctx, h.client, item.Key, body, format)
 	if err != nil {
 		return "", fmt.Errorf("failed to add comment to %s: %w", item.Key, err)
 	}
@@ -461,12 +577,33 @@ func (h *handlers) writeEditComment(ctx context.Context, item WriteItem, dryRun 
 		return fmt.Sprintf("Would edit comment %s on %s:\n%s", item.CommentID, item.Key, item.Comment), nil
 	}
 
-	body := buildCommentBody(item.Comment)
-	if err := h.client.UpdateComment(ctx, item.Key, item.CommentID, body); err != nil {
+	body, format, err := buildCommentBody(item.Comment, item.CommentFormat)
+	if err != nil {
+		return "", err
+	}
+	if err := updateComment(ctx, h.client, item.Key, item.CommentID, body, format); err != nil {
 		return "", fmt.Errorf("failed to edit comment %s on %s: %w", item.CommentID, item.Key, err)
 	}
 
 	return fmt.Sprintf("Updated comment %s on %s.", item.CommentID, item.Key), nil
+}
+
+// addComment dispatches to AddCommentV2 (wiki-markup string) or AddComment
+// (ADF) based on format. buildCommentBody returns string vs map[string]any
+// accordingly, so an unsafe cast would be wrong — branch on format instead.
+func addComment(ctx context.Context, client JiraClient, key string, body any, format string) (string, error) {
+	if format == formatWiki {
+		return client.AddCommentV2(ctx, key, body.(string))
+	}
+	return client.AddComment(ctx, key, body)
+}
+
+// updateComment mirrors addComment for edits.
+func updateComment(ctx context.Context, client JiraClient, key, commentID string, body any, format string) error {
+	if format == formatWiki {
+		return client.UpdateCommentV2(ctx, key, commentID, body.(string))
+	}
+	return client.UpdateComment(ctx, key, commentID, body)
 }
 
 var customFieldRe = regexp.MustCompile(`customfield_\d+`)
