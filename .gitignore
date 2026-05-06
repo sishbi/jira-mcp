@@ -1,2 +1,6 @@
 bin/
 .mcp.json
+.claude/
+.idea/
+CLAUDE.md
+AGENTS.md
