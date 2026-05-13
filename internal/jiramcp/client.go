@@ -40,4 +40,5 @@ type JiraClient interface {
 	GetAttachmentBody(ctx context.Context, id string, maxBytes int64) ([]byte, error)
 	PostAttachmentText(ctx context.Context, issueKey, filename, body string) (*jira.Attachment, error)
 	DeleteAttachment(ctx context.Context, id string) error
+	GetRemoteLinks(ctx context.Context, issueKey string) ([]jira.RemoteLink, error)
 }

@@ -42,6 +42,7 @@ type mockClient struct {
 	GetAttachmentBodyFn       func(ctx context.Context, id string, maxBytes int64) ([]byte, error)
 	PostAttachmentTextFn      func(ctx context.Context, issueKey, filename, body string) (*jira.Attachment, error)
 	DeleteAttachmentFn        func(ctx context.Context, id string) error
+	GetRemoteLinksFn          func(ctx context.Context, issueKey string) ([]jira.RemoteLink, error)
 }
 
 func (m *mockClient) GetMyself(ctx context.Context) (*jira.User, error) {
@@ -259,4 +260,11 @@ func (m *mockClient) DeleteAttachment(ctx context.Context, id string) error {
 		panic(fmt.Sprintf("mockClient.DeleteAttachment called but DeleteAttachmentFn not set (id=%s)", id))
 	}
 	return m.DeleteAttachmentFn(ctx, id)
+}
+
+func (m *mockClient) GetRemoteLinks(ctx context.Context, issueKey string) ([]jira.RemoteLink, error) {
+	if m.GetRemoteLinksFn == nil {
+		panic(fmt.Sprintf("mockClient.GetRemoteLinks called but GetRemoteLinksFn not set (issueKey=%s)", issueKey))
+	}
+	return m.GetRemoteLinksFn(ctx, issueKey)
 }
