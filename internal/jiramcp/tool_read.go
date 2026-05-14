@@ -41,7 +41,6 @@ var readTool = &mcp.Tool{
 3. resource — List a resource type: "projects", "boards", "sprints" (needs board_id), "sprint_issues" (needs sprint_id).
 
 Common options: fields (comma-separated), expand, limit (default 100), start_at.
-When an issue has comments, they are returned under fields.comment as an array of {id, author, body, created, updated}. Request fields=comment (or include "comment" in a fields list) to narrow the wire response.
 Hint: Use jira_schema resource=transitions with an issue_key to find valid transition IDs before transitioning.
 
 Descriptions and comments for older issues are returned in Jira wiki-markup, not Markdown. Do not feed a description/comment string from jira_read straight back into jira_write — the default write path expects Markdown and will reject recognised wiki-markup tokens. Either convert to Markdown, or set description_format="wiki" / comment_format="wiki" on the write to preserve wiki-markup input.`,
@@ -338,15 +337,16 @@ func issueToMap(issue *jira.Issue) map[string]any {
 		if issue.Fields.Labels != nil {
 			fields["labels"] = issue.Fields.Labels
 		}
-		if issue.Fields.Comments != nil && len(issue.Fields.Comments.Comments) > 0 {
+		if issue.Fields.Comments != nil {
 			comments := make([]map[string]any, 0, len(issue.Fields.Comments.Comments))
 			for _, c := range issue.Fields.Comments.Comments {
-				if c == nil {
-					continue
+				if c != nil {
+					comments = append(comments, commentToMap(c))
 				}
-				comments = append(comments, commentToMap(c))
 			}
-			fields["comment"] = comments
+			if len(comments) > 0 {
+				fields["comment"] = comments
+			}
 		}
 		if !time.Time(issue.Fields.Created).IsZero() {
 			fields["created"] = time.Time(issue.Fields.Created).Format(time.RFC3339)
