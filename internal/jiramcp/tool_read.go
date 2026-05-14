@@ -18,9 +18,10 @@ type ReadArgs struct {
 
 	Resource string `json:"resource,omitempty" jsonschema:"Resource to list: projects, boards, sprints, sprint_issues. Mutually exclusive with keys and jql."`
 
-	BoardID     int    `json:"board_id,omitempty" jsonschema:"Board ID. Required for resource=sprints."`
-	SprintID    int    `json:"sprint_id,omitempty" jsonschema:"Sprint ID. Required for resource=sprint_issues."`
-	IssueKey    string `json:"issue_key,omitempty" jsonschema:"Issue key. Required for resource=remote_links."`
+	BoardID  int    `json:"board_id,omitempty" jsonschema:"Board ID. Required for resource=sprints."`
+	SprintID int    `json:"sprint_id,omitempty" jsonschema:"Sprint ID. Required for resource=sprint_issues."`
+	IssueKey string `json:"issue_key,omitempty" jsonschema:"Issue key. Required for resource=remote_links."`
+
 	ProjectKey  string `json:"project_key,omitempty" jsonschema:"Filter boards by project key."`
 	BoardName   string `json:"board_name,omitempty" jsonschema:"Filter boards by name substring."`
 	BoardType   string `json:"board_type,omitempty" jsonschema:"Filter boards by type: scrum, kanban."`
