@@ -9,8 +9,8 @@ jira-mcp gives the model exactly what it needs:
 | Tool | What it does |
 |---|---|
 | `jira_read` | Fetch issues by key, search by JQL, list projects/boards/sprints, get remote links |
-| `jira_write` | Create, update, delete, transition, comment — accepts Markdown, supports `dry_run` |
-| `jira_schema` | Discover fields, transitions, and allowed values |
+| `jira_write` | Create, update, delete, transition, comment, link, set parent — accepts Markdown, supports `dry_run` |
+| `jira_schema` | Discover fields, transitions, link types, and allowed values |
 | `jira_user_search` | Find users by name or email, get account IDs for assignment |
 
 Four tools that compose naturally: schema to discover, read to find, write to change, user search to resolve people. Less surface area means fewer wrong picks, fewer redundant calls, more context for your actual work.
@@ -22,6 +22,16 @@ Four tools that compose naturally: schema to discover, read to find, write to ch
 - **User search** — `jira_user_search` resolves names and emails to account IDs in one call. No more guessing JQL syntax for assignee lookups.
 - **Required field validation** — before creating an issue, jira-mcp checks the project's required fields and returns missing ones by name with allowed values. Your agent gets it right on the first try instead of decoding opaque `customfield_10104` errors.
 - **Issue type validation** — if the issue type doesn't exist in the target project, the error lists available types immediately.
+- **Issue linking by name** — `jira_write` accepts `links: [{type: "Blocks", from, to}]` and resolves type names to the right link. Discover available types via `jira_schema resource=link_types`. No raw link IDs, no inward/outward confusion. `parent_key` sets an Epic (or other parent) in the same call.
+- **Wiki-markup safety** — descriptions and comments expect Markdown and are converted to ADF on the v3 API. Wiki-markup tokens (`{code}`, `{{inline}}`, `h1.`, `[text|url]`) are detected and rejected so a `jira_read → jira_write` round-trip cannot silently render as literal tokens.
+
+## Markdown support that just works
+
+Your agent already speaks Markdown. So does jira-mcp.
+
+Write descriptions and comments in plain Markdown — headings, lists, code blocks, tables, links — and they show up as native Jira content. No ADF schemas to learn, no wiki-markup quirks, no escape sequences. Tables render as tables. Line breaks stay where you put them.
+
+Need legacy wiki-markup for a specific case? Set `description_format: "wiki"` and the raw string goes through untouched.
 
 ## Compared to [mcp-atlassian](https://github.com/sooperset/mcp-atlassian)
 
