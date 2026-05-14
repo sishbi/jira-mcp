@@ -31,7 +31,7 @@ var declined = map[string]string{
 	"Parent":      "tracked in #25 / PR #27",
 	"Comments":    "tracked in #21 / PR #22",
 	"Attachments": "tracked in #19 / PR #20",
-	"IssueLinks":  "tracked in #28 (read-side asymmetry with #14's write surface)",
+	"IssueLinks":  "tracked in #28 / PR #30 (read-side asymmetry with #14's write surface)",
 
 	// --- deferred until a workflow asks ---
 	"AffectsVersions": "deferred",
